@@ -390,6 +390,7 @@ class UnifiedOrder_pub(Wxpay_client_pub):
         parameters["mch_id"] = WxPayConf_pub.MCHID    # 商户号
         parameters["spbill_create_ip"] = "127.0.0.1"    # 终端ip
         parameters["nonce_str"] = self.createNoncestr()    # 随机字符串
+        parameters["attach"] = parameters["out_trade_no"]+self.getSign(parameters)
         parameters["sign"] = self.getSign(parameters)    # 签名
         log.info("----------------parameters--------------%s", parameters)
         return self.arrayToXml(parameters)
@@ -408,8 +409,8 @@ class UnifiedOrder_pub(Wxpay_client_pub):
         self.result = self.xmlToArray(self.response)
         #code_url = self.result["code_url"]
         #return code_url
-        entry = self.record_processor_response(self.result, transaction_id=self.result["prepay_id"], basket=basket)
-        log.info("Successfully created WeChat payment [%s] for basket [%d].", self.result["prepay_id"], basket.id)
+        entry = self.record_processor_response(self.result, transaction_id=parameters["attach"], basket=basket)
+        log.info("Successfully created WeChat payment [%s] for basket [%d].", parameters["attach"], basket.id)
         return self.result
 
     def getUndResult(self):

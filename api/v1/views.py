@@ -1,5 +1,5 @@
 # -*- coding:utf-8 -*-
-from __future__ import unicode_literals
+from __future__ import unicode_literals, absolute_import
 
 import json
 import thread
@@ -31,6 +31,44 @@ import copy
 dish = 0
 lock = thread.allocate_lock()
 log = logging.getLogger(__name__)
+
+########################
+import os
+
+import waffle
+from django.core.exceptions import MultipleObjectsReturned
+from django.core.management import call_command
+from django.db import transaction
+from django.http import Http404, HttpResponse, HttpResponseBadRequest
+from django.shortcuts import redirect
+from django.utils.decorators import method_decorator
+from django.utils.six import StringIO
+from django.views.generic import View
+from edx_rest_api_client.client import EdxRestApiClient
+from edx_rest_api_client.exceptions import SlumberHttpBaseException
+from oscar.apps.partner import strategy
+from oscar.apps.payment.exceptions import PaymentError
+from oscar.core.loading import get_class, get_model
+from requests.exceptions import Timeout
+
+from ecommerce.core.url_utils import get_lms_url
+from ecommerce.extensions.basket.utils import basket_add_organization_attribute
+from ecommerce.extensions.checkout.mixins import EdxOrderPlacementMixin
+from ecommerce.extensions.checkout.utils import get_receipt_page_url
+from ecommerce.extensions.offer.constants import DYNAMIC_DISCOUNT_FLAG
+from ecommerce.extensions.payment.processors.paypal import Paypal
+
+logger = logging.getLogger(__name__)
+
+Applicator = get_class('offer.applicator', 'Applicator')
+Basket = get_model('basket', 'Basket')
+BillingAddress = get_model('order', 'BillingAddress')
+Country = get_model('address', 'Country')
+NoShippingRequired = get_class('shipping.methods', 'NoShippingRequired')
+OrderNumberGenerator = get_class('order.utils', 'OrderNumberGenerator')
+OrderTotalCalculator = get_class('checkout.calculators', 'OrderTotalCalculator')
+PaymentProcessorResponse = get_model('payment', 'PaymentProcessorResponse')
+########################
 
 
 class AlipaySuccessAPIView(APIView):
@@ -198,6 +236,15 @@ class WechatAsyncnotifyAPIView(APIView):
                 final_data.update({'sign': sign})
                 if pay_result.get('attach'):
                     log.info("============================PAY RESULTT========%s", self.arrayToXml(final_data))
+                    basket = self._get_basket(pay_result.get('attach'))
+                    log.info("=============BASKET=============%s", basket)
+                    log.info("=============BASKET=============%s", dir(basket))
+                    log.info("=============BASKET=============%s", basket.__dict__)
+                    receipt_url = get_receipt_page_url(
+                        order_number=basket.order_number,
+                        site_configuration=basket.site.siteconfiguration,
+                    )
+                    log.info("========================THE RECEIPT URL IS=====================%s", receipt_url)
                     return HttpResponse(wxpay_server_pub.arrayToXml({'return_code': 'SUCCESS'}))
                     rep = requests.post("https://api.mch.weixin.qq.com/pay/orderquery", data=self.arrayToXml(final_data))
                     #log.info("====================THE RESPONSE IS DICT ===================== %s", dir(rep))
@@ -210,6 +257,62 @@ class WechatAsyncnotifyAPIView(APIView):
         except Exception, e:
             log.exception(e)
         return HttpResponse(wxpay_server_pub.arrayToXml({'return_code': ret_str}))
+
+    def _add_dynamic_discount_to_request(self, basket):
+        # TODO: Remove as a part of REVMI-124 as this is a hacky solution
+        # The problem is that orders are being created after payment processing, and the discount is not
+        # saved in the database, so it needs to be calculated again in order to save the correct info to the
+        # order. REVMI-124 will create the order before payment processing, when we have the discount context.
+        if waffle.flag_is_active(self.request, DYNAMIC_DISCOUNT_FLAG) and basket.lines.count() == 1:
+            discount_lms_url = get_lms_url('/api/discounts/')
+            lms_discount_client = EdxRestApiClient(discount_lms_url,
+                                                   jwt=self.request.site.siteconfiguration.access_token)
+            ck = basket.lines.first().product.course_id
+            user_id = basket.owner.lms_user_id
+            try:
+                response = lms_discount_client.user(user_id).course(ck).get()
+                self.request.GET = self.request.GET.copy()
+                self.request.GET['discount_jwt'] = response.get('jwt')
+            except (SlumberHttpBaseException, Timeout) as error:
+                logger.warning(
+                    'Failed to get discount jwt from LMS. [%s] returned [%s]',
+                    discount_lms_url,
+                    error.response)
+            # END TODO
+
+    def _get_basket(self, payment_id):
+        """
+        Retrieve a basket using a payment ID.
+        Arguments:
+            payment_id: payment_id received from PayPal.
+        Returns:
+            It will return related basket or log exception and return None if
+            duplicate payment_id received or any other exception occurred.
+        """
+        try:
+            basket = PaymentProcessorResponse.objects.get(
+                processor_name="wechatpay",
+                transaction_id=payment_id
+            ).basket
+            basket.strategy = strategy.Default()
+
+            # TODO: Remove as a part of REVMI-124 as this is a hacky solution
+            # The problem is that orders are being created after payment processing, and the discount is not
+            # saved in the database, so it needs to be calculated again in order to save the correct info to the
+            # order. REVMI-124 will create the order before payment processing, when we have the discount context.
+            self._add_dynamic_discount_to_request(basket)
+            # END TODO
+
+            Applicator().apply(basket, basket.owner, self.request)
+
+            basket_add_organization_attribute(basket, self.request.GET)
+            return basket
+        except MultipleObjectsReturned:
+            logger.warning(u"Duplicate payment ID [%s] received from WeChat Payment.", payment_id)
+            return None
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(u"Unexpected error during basket retrieval while executing WeChat payment.")
+            return None
 
     def xmlToArray(self, xml):
         """将xml转为array"""
