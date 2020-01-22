@@ -211,35 +211,6 @@ class WechatAsyncnotifyAPIView(APIView):
             log.exception(e)
         return HttpResponse(wxpay_server_pub.arrayToXml({'return_code': ret_str}))
 
-
-    def _get_basket(self, payment_id):
-        """
-        Retrieve a basket using a payment ID.
-        Arguments:
-            payment_id: payment_id received from PayPal.
-        Returns:
-            It will return related basket or log exception and return None if
-            duplicate payment_id received or any other exception occurred.
-        """
-        try:
-            basket = PaymentProcessorResponse.objects.get(
-                processor_name=self.payment_processor.NAME,
-                transaction_id=payment_id
-            ).basket
-            basket.strategy = strategy.Default()
-
-            # TODO: Remove as a part of REVMI-124 as this is a hacky solution
-            # The problem is that orders are being created after payment processing, and the discount is not
-            # saved in the database, so it needs to be calculated again in order to save the correct info to the
-            # order. REVMI-124 will create the order before payment processing, when we have the discount context.
-            self._add_dynamic_discount_to_request(basket)
-            # END TODO
-
-            Applicator().apply(basket, basket.owner, self.request)
-
-            basket_add_organization_attribute(basket, self.request.GET)
-            return basket
-
     def xmlToArray(self, xml):
         """将xml转为array"""
         array_data = {}
