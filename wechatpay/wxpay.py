@@ -56,9 +56,12 @@ import sys
 reload(sys)
 sys.setdefaultencoding('utf8')
 
-from ecommerce.extensions.payment.processors import BasePaymentProcessor, HandledProcessorResponse
 import logging
 log = logging.getLogger(__name__)
+
+from oscar.core.loading import get_model
+
+PaymentProcessorResponse = get_model('payment', 'PaymentProcessorResponse')
 
 
 class WxPayConf_pub(object):
@@ -398,14 +401,15 @@ class UnifiedOrder_pub(Wxpay_client_pub):
         prepay_id = self.result["prepay_id"]
         return prepay_id
 
-    def getCodeUrl(self, parameters):
+    def getCodeUrl(self, parameters, basket):
         """获取prepay_id"""
         self.postXml(parameters)
         log.info("--------self.response is------- %s", self.response)
         self.result = self.xmlToArray(self.response)
         #code_url = self.result["code_url"]
         #return code_url
-        bp = BasePaymentProcessor()
+        entry = self.record_processor_response(self.result, transaction_id=self.result["prepay_id"], basket=basket)
+        log.info("Successfully created WeChat payment [%s] for basket [%d].", self.result["prepay_id"], basket.id)
         return self.result
 
     def getUndResult(self):
@@ -413,6 +417,20 @@ class UnifiedOrder_pub(Wxpay_client_pub):
         self.result = self.xmlToArray(self.response)
         result = self.result
         return result
+
+    def record_processor_response(self, response, transaction_id=None, basket=None):
+        """
+        Save the processor's response to the database for auditing.
+        Arguments:
+            response (dict): Response received from the payment processor
+        Keyword Arguments:
+            transaction_id (string): Identifier for the transaction on the payment processor's servers
+            basket (Basket): Basket associated with the payment event (e.g., being purchased)
+        Return
+            PaymentProcessorResponse
+        """
+        return PaymentProcessorResponse.objects.create(processor_name=self.NAME, transaction_id=transaction_id,
+                                                       response=response, basket=basket)
 
 
 class OrderQuery_pub(Wxpay_client_pub):
