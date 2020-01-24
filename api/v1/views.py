@@ -57,6 +57,7 @@ from ecommerce.extensions.checkout.mixins import EdxOrderPlacementMixin
 from ecommerce.extensions.checkout.utils import get_receipt_page_url
 from ecommerce.extensions.offer.constants import DYNAMIC_DISCOUNT_FLAG
 from ecommerce.extensions.payment.processors.paypal import Paypal
+from ecommerce.extensions.payment.helpers import get_processor_class_by_name
 
 logger = logging.getLogger(__name__)
 
@@ -190,15 +191,48 @@ class AppAlipayAsyncnotifyAPIView(APIView):
             log.exception(e)
         return HttpResponse("fail")
 
+class CsrfExemptSessionAuthentication(SessionAuthentication):
 
-class WechatAsyncnotifyAPIView(APIView):
+    def enforce_csrf(self, request):
+        return
+
+class WechatAsyncnotifyAPIView(EdxOrderPlacementMixin, APIView):
     """
     wechat asyncnotify api view
     """
+    authentication_classes = (CsrfExemptSessionAuthentication, BasicAuthentication)
+    error_url = "/checkout/error/"
+
+    @property
+    def payment_processor(self):
+        wechat_payment_processor_class = get_processor_class_by_name("wechatpay")
+        Wechat_Payment_Processor = wechat_payment_processor_class()
+        return Wechat_Payment_Processor
+
     def post(self, request, *args, **kwargs):
         """
         微信回调支付
         """
+        log.info("================UMAIR==========%s", request)
+        log.info("================UMAIR==========%s", request.body)
+        try:
+            if request.POST.get('code_url'):
+                code_url = True
+        except:
+            code_url = False
+        if code_url:
+            code_url = request.POST.get('code_url')
+            total_fee = request.POST.get('total_fee')
+            img = qrcode.make(code_url)
+            buffer = cStringIO.StringIO()
+            img.save(buffer, format="JPEG")
+            qr_img = buffer.getvalue()
+            qr_img_64 = "data:image/jpeg;base64,"+base64.b64encode(qr_img)
+            context = {
+                'img_64': qr_img_64,
+                'total_fee': total_fee
+            }
+            return render(request,'wechat_qr.html',context)
         try:
             ret_str = 'FAIL'
             log.info('********** wechatpay notify **********')
@@ -238,17 +272,53 @@ class WechatAsyncnotifyAPIView(APIView):
                     log.info("============================PAY RESULTT========%s", self.arrayToXml(final_data))
                     basket = self._get_basket(pay_result.get('attach'))
                     log.info("=============BASKET=============%s", basket)
-                    log.info("=============BASKET=============%s", dir(basket))
-                    log.info("=============BASKET=============%s", basket.__dict__)
                     receipt_url = get_receipt_page_url(
                         order_number=basket.order_number,
                         site_configuration=basket.site.siteconfiguration,
                     )
+
                     log.info("========================THE RECEIPT URL IS=====================%s", receipt_url)
+
+                    try:
+                        with transaction.atomic():
+                            try:
+                                self.handle_payment(pay_result, basket, wechat=True)
+                            except PaymentError:
+                                return redirect(error_url)
+                    except:  # pylint: disable=bare-except
+                        logger.exception('Attempts to handle payment for basket [%d] failed.', basket.id)
+                        return redirect(receipt_url)
+
+                    try:
+                        shipping_method = NoShippingRequired()
+                        shipping_charge = shipping_method.calculate(basket)
+                        order_total = OrderTotalCalculator().calculate(basket, shipping_charge)
+                        user = basket.owner
+                        # Given a basket, order number generation is idempotent. Although we've already
+                        # generated this order number once before, it's faster to generate it again
+                        # than to retrieve an invoice number from PayPal.
+                        order_number = basket.order_number
+
+                        order = self.handle_order_placement(
+                            order_number=order_number,
+                            user=user,
+                            basket=basket,
+                            shipping_address=None,
+                            shipping_method=shipping_method,
+                            shipping_charge=shipping_charge,
+                            billing_address=None,
+                            order_total=order_total,
+                            request=request
+                        )
+                        self.handle_post_order(order)
+                        return HttpResponseRedirect(receipt_url)
+
+                    except Exception as e:  # pylint: disable=broad-except
+                        logger.exception(self.order_placement_failure_msg, basket.id, e)
+                        return redirect(receipt_url)
+
                     return HttpResponse(wxpay_server_pub.arrayToXml({'return_code': 'SUCCESS'}))
                     rep = requests.post("https://api.mch.weixin.qq.com/pay/orderquery", data=self.arrayToXml(final_data))
-                    #log.info("====================THE RESPONSE IS DICT ===================== %s", dir(rep))
-                    #log.info("====================THE RESPONSE IS DICT ===================== %s", rep.__dict__)
                     #log.info("====================THE RESPONSE IS DICT ===================== %s", wxpay_server_pub.xmlToArray(rep.content))
                     #log.info("====================THE RESPONSE IS DICT ===================== %s", wxpay_server_pub.xmlToArray(rep.content).get('return_code'))
                     #rep_data = rep.json()
@@ -259,10 +329,6 @@ class WechatAsyncnotifyAPIView(APIView):
         return HttpResponse(wxpay_server_pub.arrayToXml({'return_code': ret_str}))
 
     def _add_dynamic_discount_to_request(self, basket):
-        # TODO: Remove as a part of REVMI-124 as this is a hacky solution
-        # The problem is that orders are being created after payment processing, and the discount is not
-        # saved in the database, so it needs to be calculated again in order to save the correct info to the
-        # order. REVMI-124 will create the order before payment processing, when we have the discount context.
         if waffle.flag_is_active(self.request, DYNAMIC_DISCOUNT_FLAG) and basket.lines.count() == 1:
             discount_lms_url = get_lms_url('/api/discounts/')
             lms_discount_client = EdxRestApiClient(discount_lms_url,
@@ -278,7 +344,6 @@ class WechatAsyncnotifyAPIView(APIView):
                     'Failed to get discount jwt from LMS. [%s] returned [%s]',
                     discount_lms_url,
                     error.response)
-            # END TODO
 
     def _get_basket(self, payment_id):
         """
@@ -370,10 +435,10 @@ class WechatH5AsyncnotifyAPIView(APIView):
 #    def get(self, request, format=None):
 #        log.info("================== %s", request)
 #        return HttpResponse("============You're voting on question==========")
-class CsrfExemptSessionAuthentication(SessionAuthentication):
+#class CsrfExemptSessionAuthentication(SessionAuthentication):
 
-    def enforce_csrf(self, request):
-        return
+#    def enforce_csrf(self, request):
+#        return
 
 class WeChatQRCodeView(APIView):
 

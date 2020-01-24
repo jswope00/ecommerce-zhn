@@ -60,9 +60,12 @@ import logging
 log = logging.getLogger(__name__)
 
 from oscar.core.loading import get_model
+from collections import namedtuple
+from decimal import Decimal
 
 PaymentProcessorResponse = get_model('payment', 'PaymentProcessorResponse')
-
+HandledProcessorResponse = namedtuple('HandledProcessorResponse',
+                                      ['transaction_id', 'total', 'currency', 'card_number', 'card_type'])
 
 class WxPayConf_pub(object):
     """配置账号信息"""
@@ -433,6 +436,26 @@ class UnifiedOrder_pub(Wxpay_client_pub):
         return PaymentProcessorResponse.objects.create(processor_name=self.NAME, transaction_id=transaction_id,
                                                        response=response, basket=basket)
 
+    def handle_processor_response(self, response, basket=None):
+        """
+        Might have to add error statements as well.
+        (https://github.com/edx/ecommerce/blob/477666532bd1942c36823f50ed0f50de1c26f0df/ecommerce/extensions/payment/processors/paypal.py#L312)
+        """
+        self.record_processor_response(response, transaction_id=response.get('attach'), basket=basket)
+        log.info("Successfully executed WeChat Payment [%s] for basket [%d].", response.get('attach'), basket.id)
+
+        currency = response.get('fee_type')
+        total = Decimal(response.get('total_fee'))
+        transaction_id = response.get('attach')
+        label = 'WeChat Payment'
+
+        return HandledProcessorResponse(
+            transaction_id=transaction_id,
+            total=total,
+            currency=currency,
+            card_number=label,
+            card_type=None
+        )
 
 class OrderQuery_pub(Wxpay_client_pub):
     """订单查询接口"""

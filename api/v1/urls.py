@@ -44,7 +44,7 @@ urlpatterns = [
         name='wechath5_asyncnotify'
     ),
     url(
-        r'payments/wechat/qr/.*$',
+        r'payments/wechat/qr/$',
         WeChatQRCodeView.as_view(),
         name='wechat_pay'
     ),
