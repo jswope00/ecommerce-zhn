@@ -213,8 +213,6 @@ class WechatAsyncnotifyAPIView(EdxOrderPlacementMixin, APIView):
         """
         微信回调支付
         """
-        log.info("================UMAIR==========%s", request)
-        log.info("================UMAIR==========%s", request.body)
         try:
             if request.POST.get('code_url'):
                 code_url = True
@@ -328,23 +326,6 @@ class WechatAsyncnotifyAPIView(EdxOrderPlacementMixin, APIView):
             log.exception(e)
         return HttpResponse(wxpay_server_pub.arrayToXml({'return_code': ret_str}))
 
-    def _add_dynamic_discount_to_request(self, basket):
-        if waffle.flag_is_active(self.request, DYNAMIC_DISCOUNT_FLAG) and basket.lines.count() == 1:
-            discount_lms_url = get_lms_url('/api/discounts/')
-            lms_discount_client = EdxRestApiClient(discount_lms_url,
-                                                   jwt=self.request.site.siteconfiguration.access_token)
-            ck = basket.lines.first().product.course_id
-            user_id = basket.owner.lms_user_id
-            try:
-                response = lms_discount_client.user(user_id).course(ck).get()
-                self.request.GET = self.request.GET.copy()
-                self.request.GET['discount_jwt'] = response.get('jwt')
-            except (SlumberHttpBaseException, Timeout) as error:
-                logger.warning(
-                    'Failed to get discount jwt from LMS. [%s] returned [%s]',
-                    discount_lms_url,
-                    error.response)
-
     def _get_basket(self, payment_id):
         """
         Retrieve a basket using a payment ID.
@@ -356,17 +337,10 @@ class WechatAsyncnotifyAPIView(EdxOrderPlacementMixin, APIView):
         """
         try:
             basket = PaymentProcessorResponse.objects.get(
-                processor_name="wechatpay",
+                processor_name=self.payment_processor.NAME,
                 transaction_id=payment_id
             ).basket
             basket.strategy = strategy.Default()
-
-            # TODO: Remove as a part of REVMI-124 as this is a hacky solution
-            # The problem is that orders are being created after payment processing, and the discount is not
-            # saved in the database, so it needs to be calculated again in order to save the correct info to the
-            # order. REVMI-124 will create the order before payment processing, when we have the discount context.
-            self._add_dynamic_discount_to_request(basket)
-            # END TODO
 
             Applicator().apply(basket, basket.owner, self.request)
 
@@ -397,7 +371,6 @@ class WechatAsyncnotifyAPIView(EdxOrderPlacementMixin, APIView):
         xml.append("</xml>")
         return "".join(xml)
 
-
 class WechatH5AsyncnotifyAPIView(APIView):
     """
     wechat H5 asyncnotify api view
@@ -427,18 +400,6 @@ class WechatH5AsyncnotifyAPIView(APIView):
                 if rep_data.get('result') == "success":
                     ret_str = 'SUCCESS'
         return HttpResponse(wxpayh5_server_pub.arrayToXml({'return_code': ret_str}))
-
-#@method_decorator(csrf_exempt, name='get')
-#class WeChatQRCodeView(LoginRequiredMixin, APIView):
-#
-#    @csrf_exempt
-#    def get(self, request, format=None):
-#        log.info("================== %s", request)
-#        return HttpResponse("============You're voting on question==========")
-#class CsrfExemptSessionAuthentication(SessionAuthentication):
-
-#    def enforce_csrf(self, request):
-#        return
 
 class WeChatQRCodeView(APIView):
 
