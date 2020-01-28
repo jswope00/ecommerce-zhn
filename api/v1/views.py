@@ -33,19 +33,12 @@ lock = thread.allocate_lock()
 log = logging.getLogger(__name__)
 
 ########################
-import os
-
-import waffle
 from django.core.exceptions import MultipleObjectsReturned
-from django.core.management import call_command
 from django.db import transaction
 from django.http import Http404, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import redirect
-from django.utils.decorators import method_decorator
 from django.utils.six import StringIO
 from django.views.generic import View
-from edx_rest_api_client.client import EdxRestApiClient
-from edx_rest_api_client.exceptions import SlumberHttpBaseException
 from oscar.apps.partner import strategy
 from oscar.apps.payment.exceptions import PaymentError
 from oscar.core.loading import get_class, get_model
@@ -55,7 +48,6 @@ from ecommerce.core.url_utils import get_lms_url
 from ecommerce.extensions.basket.utils import basket_add_organization_attribute
 from ecommerce.extensions.checkout.mixins import EdxOrderPlacementMixin
 from ecommerce.extensions.checkout.utils import get_receipt_page_url
-from ecommerce.extensions.payment.processors.paypal import Paypal
 from ecommerce.extensions.payment.helpers import get_processor_class_by_name
 
 logger = logging.getLogger(__name__)
