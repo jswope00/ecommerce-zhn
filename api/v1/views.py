@@ -55,7 +55,6 @@ from ecommerce.core.url_utils import get_lms_url
 from ecommerce.extensions.basket.utils import basket_add_organization_attribute
 from ecommerce.extensions.checkout.mixins import EdxOrderPlacementMixin
 from ecommerce.extensions.checkout.utils import get_receipt_page_url
-from ecommerce.extensions.offer.constants import DYNAMIC_DISCOUNT_FLAG
 from ecommerce.extensions.payment.processors.paypal import Paypal
 from ecommerce.extensions.payment.helpers import get_processor_class_by_name
 
@@ -214,24 +213,6 @@ class WechatAsyncnotifyAPIView(EdxOrderPlacementMixin, APIView):
         微信回调支付
         """
         try:
-            if request.POST.get('code_url'):
-                code_url = True
-        except:
-            code_url = False
-        if code_url:
-            code_url = request.POST.get('code_url')
-            total_fee = request.POST.get('total_fee')
-            img = qrcode.make(code_url)
-            buffer = cStringIO.StringIO()
-            img.save(buffer, format="JPEG")
-            qr_img = buffer.getvalue()
-            qr_img_64 = "data:image/jpeg;base64,"+base64.b64encode(qr_img)
-            context = {
-                'img_64': qr_img_64,
-                'total_fee': total_fee
-            }
-            return render(request,'wechat_qr.html',context)
-        try:
             ret_str = 'FAIL'
             log.info('********** wechatpay notify **********')
             log.info(request.body)
@@ -280,9 +261,10 @@ class WechatAsyncnotifyAPIView(EdxOrderPlacementMixin, APIView):
                     try:
                         with transaction.atomic():
                             try:
-                                self.handle_payment(pay_result, basket, wechat=True)
+                                self.handle_payment(pay_result, basket)
                             except PaymentError:
-                                return redirect(error_url)
+                                #return redirect(error_url)
+                                return HttpResponse(wxpay_server_pub.arrayToXml({'return_code': 'SUCCESS'}))
                     except:  # pylint: disable=bare-except
                         logger.exception('Attempts to handle payment for basket [%d] failed.', basket.id)
                         return redirect(receipt_url)
@@ -309,11 +291,12 @@ class WechatAsyncnotifyAPIView(EdxOrderPlacementMixin, APIView):
                             request=request
                         )
                         self.handle_post_order(order)
-                        return HttpResponseRedirect(receipt_url)
+                        return HttpResponse(wxpay_server_pub.arrayToXml({'return_code': 'SUCCESS'}))
 
                     except Exception as e:  # pylint: disable=broad-except
                         logger.exception(self.order_placement_failure_msg, basket.id, e)
-                        return redirect(receipt_url)
+                        #return redirect(receipt_url)
+                        return HttpResponse(wxpay_server_pub.arrayToXml({'return_code': 'SUCCESS'}))
 
                     return HttpResponse(wxpay_server_pub.arrayToXml({'return_code': 'SUCCESS'}))
                     rep = requests.post("https://api.mch.weixin.qq.com/pay/orderquery", data=self.arrayToXml(final_data))
@@ -406,7 +389,6 @@ class WeChatQRCodeView(APIView):
     authentication_classes = (CsrfExemptSessionAuthentication, BasicAuthentication)
 
     def get(self, request, format=None):
-        log.info("=========GET REQUEST TEST========= %s", request.META)
         context = {
             'body': True,
         }
