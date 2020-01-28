@@ -383,6 +383,7 @@ class WeChatQRCodeView(APIView):
     def get(self, request, format=None):
         context = {
             'body': True,
+            'lms_url': get_lms_url()
         }
         return render(request,'wechat_qr.html',context)
 
