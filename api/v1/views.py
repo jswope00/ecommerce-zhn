@@ -248,7 +248,7 @@ class WechatAsyncnotifyAPIView(EdxOrderPlacementMixin, APIView):
                         site_configuration=basket.site.siteconfiguration,
                     )
 
-                    log.info("========================THE RECEIPT URL IS=====================%s", receipt_url)
+                    log.info("THE RECEIPT URL IS=%s", receipt_url)
 
                     try:
                         with transaction.atomic():
