@@ -59,7 +59,7 @@ setup(
     install_requires=load_requirements('requirements.txt'),
     entry_points={
         'lms.djangoapp': [
-            'payments = apps:PaymentsConfig',
+            'payments = payments.apps:PaymentsConfig',
         ],
     },
 )
